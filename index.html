@@ -1,0 +1,440 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>千里江山图 - 粒子交互绘卷</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #e6e1d3; font-family: "Songti SC", "SimSun", serif; }
+        #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
+        
+        /* 宣纸纹理层 */
+        #paper-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noiseFilter'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noiseFilter)' opacity='0.05'/%3E%3C/svg%3E");
+            pointer-events: none; z-index: 2; mix-blend-mode: multiply;
+        }
+
+        /* 视频层 (隐藏或用于调试) */
+        #video-input { position: absolute; top: 10px; left: 10px; width: 160px; height: 120px; z-index: 0; opacity: 0; transform: scaleX(-1); border-radius: 8px; }
+        
+        /* UI 界面 */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none;
+            display: flex; flex-direction: column; justify-content: space-between; padding: 40px; box-sizing: border-box;
+        }
+        
+        .title-box { text-align: right; color: #2a3b45; text-shadow: 0 0 10px rgba(220, 210, 190, 0.8); }
+        h1 { font-size: 3rem; margin: 0; letter-spacing: 0.5rem; writing-mode: vertical-rl; text-orientation: upright; height: 300px; float: right; border-left: 2px solid #b85c3a; padding-left: 20px; }
+        .stamp { width: 60px; height: 60px; border: 3px solid #b85c3a; color: #b85c3a; display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; border-radius: 4px; margin-top: 20px; float: right; clear: both; background: rgba(184, 92, 58, 0.1); }
+
+        .status-box { color: #2a6b8c; font-size: 14px; background: rgba(255, 255, 255, 0.6); padding: 15px; border-radius: 4px; backdrop-filter: blur(5px); max-width: 300px; border-left: 4px solid #4a9c7d; }
+        .loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #4a9c7d; font-size: 24px; animation: pulse 2s infinite; }
+        
+        .gesture-hint { margin-top: 10px; font-size: 12px; opacity: 0.8; }
+        .highlight { color: #b85c3a; font-weight: bold; }
+
+        @keyframes pulse { 0% { opacity: 0.5; } 50% { opacity: 1; } 100% { opacity: 0.5; } }
+    </style>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/simplex-noise/2.4.0/simplex-noise.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gsap/3.12.2/gsap.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading-screen" class="loading">正在研磨丹青...<br><span style="font-size:14px">请允许摄像头权限以体验手势交互</span></div>
+    
+    <video id="video-input"></video>
+    <div id="canvas-container"></div>
+    <div id="paper-overlay"></div>
+
+    <div id="ui-layer">
+        <div class="status-box">
+            <div id="status-text">系统就绪，等待手势...</div>
+            <div class="gesture-hint">
+                • <span class="highlight">握拳</span>：聚拢山河 (全景)<br>
+                • <span class="highlight">五指张开</span>：云散林疏 (散开)<br>
+                • <span class="highlight">捏合(OK手势)</span>：聚焦细观 (放大)<br>
+                • <span class="highlight">手掌移动</span>：浏览画卷
+            </div>
+        </div>
+        <div class="title-box">
+            <h1>千里江山图</h1>
+            <div class="stamp">希孟</div>
+        </div>
+    </div>
+
+    <script type="x-shader/x-vertex" id="vertexshader">
+        attribute float size;
+        attribute vec3 customColor;
+        attribute float opacity;
+        varying vec3 vColor;
+        varying float vOpacity;
+        
+        void main() {
+            vColor = customColor;
+            vOpacity = opacity;
+            vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+            gl_PointSize = size * (300.0 / -mvPosition.z);
+            gl_Position = projectionMatrix * mvPosition;
+        }
+    </script>
+
+    <script type="x-shader/x-fragment" id="fragmentshader">
+        uniform vec3 color;
+        uniform sampler2D pointTexture;
+        varying vec3 vColor;
+        varying float vOpacity;
+
+        void main() {
+            // 模拟水墨晕染的圆形笔触
+            vec2 cxy = 2.0 * gl_PointCoord - 1.0;
+            float r = dot(cxy, cxy);
+            if (r > 1.0) discard;
+            
+            // 边缘柔化
+            float alpha = 1.0 - smoothstep(0.5, 1.0, r);
+            
+            gl_FragColor = vec4(color * vColor, alpha * vOpacity);
+        }
+    </script>
+
+    <script>
+        /**
+         * 1. 全局配置与状态管理
+         */
+        const CONFIG = {
+            particleCount: 60000,
+            colors: {
+                deepBlue: new THREE.Color('#2a6b8c'), // 石青
+                brightGreen: new THREE.Color('#4a9c7d'), // 石绿
+                ocher: new THREE.Color('#b85c3a'),    // 赭石
+                gold: new THREE.Color('#d4af37'),     // 金
+                mist: new THREE.Color('#e0e0e0')      // 云雾
+            },
+            camPos: { x: 0, y: 30, z: 100 }
+        };
+
+        const STATE = {
+            gesture: 'NONE', // FIST, OPEN, PINCH
+            handPos: { x: 0, y: 0 },
+            isZoomed: false
+        };
+
+        /**
+         * 2. Three.js 核心场景搭建
+         */
+        let scene, camera, renderer, material, particleSystem;
+        let originalPositions, targetPositions;
+        const simplex = new SimplexNoise();
+
+        function initThree() {
+            const container = document.getElementById('canvas-container');
+            
+            // 场景
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0xe6e1d3, 0.008); // 宣纸底色雾
+
+            // 相机
+            camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 2000);
+            camera.position.set(CONFIG.camPos.x, CONFIG.camPos.y, CONFIG.camPos.z);
+            camera.lookAt(0, 0, 0);
+
+            // 渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setPixelRatio(window.devicePixelRatio);
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setClearColor(0xe6e1d3, 1); // 宣纸底色
+            container.appendChild(renderer.domElement);
+
+            initParticles();
+            
+            // 响应式
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        /**
+         * 3. 粒子系统生成 (核心算法)
+         * 使用噪声生成山水画的高度图并着色
+         */
+        function initParticles() {
+            const geometry = new THREE.BufferGeometry();
+            const positions = [];
+            const colors = [];
+            const sizes = [];
+            const opacities = [];
+            
+            originalPositions = []; // 存储山峦形态位置
+            targetPositions = [];   // 用于动画插值
+
+            const width = 200;
+            const depth = 100;
+
+            for (let i = 0; i < CONFIG.particleCount; i++) {
+                // 随机分布在网格上，略带抖动模拟自然感
+                let x = (Math.random() * width) - width / 2;
+                let z = (Math.random() * depth) - depth / 2;
+                
+                // 使用 Simplex Noise 生成地形高度 (Y)
+                // 叠加多层噪声以获得细节
+                let noiseVal = simplex.noise2D(x * 0.03, z * 0.03) * 15;
+                noiseVal += simplex.noise2D(x * 0.1, z * 0.1) * 5;
+                noiseVal = Math.max(-10, noiseVal); // 削平底部做水面
+
+                let y = noiseVal;
+                
+                // 颜色映射逻辑 (青绿山水法则)
+                let color = new THREE.Color();
+                let size = 1.0;
+                let opacity = 0.8;
+
+                if (y < -2) {
+                    // 水面 / 倒影
+                    color = CONFIG.colors.mist;
+                    opacity = 0.3;
+                    size = 2.0;
+                    y = -5 + Math.random(); // 压平水面
+                } else if (y < 5) {
+                    // 山脚 (赭石)
+                    color.lerpColors(CONFIG.colors.ocher, CONFIG.colors.brightGreen, (y + 2) / 7);
+                    size = 1.5;
+                } else if (y < 12) {
+                    // 山腰 (石绿)
+                    color.lerpColors(CONFIG.colors.brightGreen, CONFIG.colors.deepBlue, (y - 5) / 7);
+                    size = 1.8;
+                } else {
+                    // 山顶 (石青/金)
+                    color = CONFIG.colors.deepBlue;
+                    if (Math.random() > 0.95) color = CONFIG.colors.gold; // 金色点缀
+                    size = 2.0;
+                }
+
+                // 记录数据
+                positions.push(x, y, z);
+                originalPositions.push(x, y, z); // 记住"合拢"状态的位置
+                
+                colors.push(color.r, color.g, color.b);
+                sizes.push(size);
+                opacities.push(opacity);
+            }
+
+            geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+            geometry.setAttribute('customColor', new THREE.Float32BufferAttribute(colors, 3));
+            geometry.setAttribute('size', new THREE.Float32BufferAttribute(sizes, 1));
+            geometry.setAttribute('opacity', new THREE.Float32BufferAttribute(opacities, 1));
+
+            // 自定义着色器材质
+            material = new THREE.ShaderMaterial({
+                uniforms: {
+                    color: { value: new THREE.Color(0xffffff) },
+                },
+                vertexShader: document.getElementById('vertexshader').textContent,
+                fragmentShader: document.getElementById('fragmentshader').textContent,
+                transparent: true,
+                depthWrite: false,
+                blending: THREE.NormalBlending
+            });
+
+            particleSystem = new THREE.Points(geometry, material);
+            scene.add(particleSystem);
+        }
+
+        /**
+         * 4. MediaPipe 手势识别逻辑
+         */
+        function onResults(results) {
+            document.getElementById('loading-screen').style.display = 'none';
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                
+                // 计算关键点距离以判断手势
+                const wrist = landmarks[0];
+                const thumbTip = landmarks[4];
+                const indexTip = landmarks[8];
+                const middleTip = landmarks[12];
+                const ringTip = landmarks[16];
+                const pinkyTip = landmarks[20];
+
+                // 1. 计算手掌中心的大致位置 (用于控制视角)
+                // MediaPipe坐标是 0-1，转换为 -1 到 1
+                STATE.handPos.x = (landmarks[9].x - 0.5) * 2; 
+                STATE.handPos.y = (landmarks[9].y - 0.5) * 2;
+
+                // 2. 检测握拳 (指尖到手腕距离的总和)
+                const tips = [indexTip, middleTip, ringTip, pinkyTip];
+                let avgDistToWrist = 0;
+                tips.forEach(tip => {
+                    avgDistToWrist += Math.sqrt(Math.pow(tip.x - wrist.x, 2) + Math.pow(tip.y - wrist.y, 2));
+                });
+                avgDistToWrist /= 4;
+
+                // 3. 检测捏合 (拇指和食指距离)
+                const pinchDist = Math.sqrt(Math.pow(thumbTip.x - indexTip.x, 2) + Math.pow(thumbTip.y - indexTip.y, 2));
+
+                // 状态机更新
+                const statusText = document.getElementById('status-text');
+
+                if (pinchDist < 0.05) {
+                    STATE.gesture = 'PINCH'; // 细节聚焦
+                    statusText.innerHTML = "当前状态：<span style='color:#b85c3a'>细观 (聚焦)</span>";
+                } else if (avgDistToWrist < 0.15) {
+                    STATE.gesture = 'FIST'; // 合拢山河
+                    statusText.innerHTML = "当前状态：<span style='color:#2a6b8c'>凝聚 (成画)</span>";
+                } else if (avgDistToWrist > 0.25) {
+                    STATE.gesture = 'OPEN'; // 散开
+                    statusText.innerHTML = "当前状态：<span style='color:#4a9c7d'>散开 (云烟)</span>";
+                } else {
+                    STATE.gesture = 'NONE';
+                    statusText.innerHTML = "当前状态：浏览中...";
+                }
+
+                updateParticleBehavior();
+            }
+        }
+
+        /**
+         * 5. 交互反馈与动画更新
+         */
+        function updateParticleBehavior() {
+            const positions = particleSystem.geometry.attributes.position.array;
+            const time = Date.now() * 0.001;
+
+            // 摄像机/交互控制
+            const targetCamX = -STATE.handPos.x * 40; // 反向移动以模拟拖拽感
+            const targetCamY = 30 + (STATE.handPos.y * 20);
+            
+            // 平滑移动摄像机
+            gsap.to(camera.position, {
+                x: targetCamX,
+                y: targetCamY,
+                duration: 1.5,
+                ease: "power2.out"
+            });
+            
+            // 聚焦逻辑
+            if (STATE.gesture === 'PINCH') {
+                gsap.to(camera.position, { z: 40, duration: 2 }); // 推近
+            } else {
+                gsap.to(camera.position, { z: 100, duration: 2 }); // 恢复
+            }
+
+            // 粒子动态更新 (每一帧)
+            // 注意：大规模粒子位置更新通常在Shader中做性能更好，
+            // 但为了逻辑演示清晰，这里在CPU端处理部分逻辑，
+            // 并使用GSAP做状态切换的“目标值”设定，实际渲染循环做插值。
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const positions = particleSystem.geometry.attributes.position.array;
+            const count = CONFIG.particleCount;
+            const time = Date.now() * 0.002;
+
+            for (let i = 0; i < count; i++) {
+                let ix = i * 3;
+                let iy = i * 3 + 1;
+                let iz = i * 3 + 2;
+
+                // 原始目标位置
+                let tx = originalPositions[ix];
+                let ty = originalPositions[iy];
+                let tz = originalPositions[iz];
+
+                // 根据状态修改目标位置
+                if (STATE.gesture === 'OPEN') {
+                    // 散开态：加上基于正弦波的漂浮偏移，模拟云雾
+                    tx += Math.sin(time + ty) * 10;
+                    ty += Math.cos(time + tx) * 5 + 10; // 向上飘
+                    tz += Math.sin(time + index) * 10;
+                    
+                    // 让粒子稍微变大变虚（通过修改透明度属性，此处略简略直接修改位置）
+                } else if (STATE.gesture === 'FIST') {
+                    // 合拢态：严格回归原始山形，并加上微弱的呼吸感
+                    ty += Math.sin(time * 2 + tx * 0.1) * 0.5;
+                } else {
+                    // 默认态：缓慢流动
+                    // 模拟水流或风吹草动
+                    if (ty < -2) { // 水面
+                        tx += Math.sin(time + iz * 0.1) * 0.2;
+                    }
+                }
+
+                // 简单的线性插值 (Lerp) 实现平滑过渡
+                // 这里的 0.05 是阻尼系数
+                positions[ix] += (tx - positions[ix]) * 0.05;
+                positions[iy] += (ty - positions[iy]) * 0.05;
+                positions[iz] += (tz - positions[iz]) * 0.05;
+            }
+
+            particleSystem.geometry.attributes.position.needsUpdate = true;
+            
+            // 缓慢旋转场景
+            if (STATE.gesture === 'NONE') {
+                particleSystem.rotation.y += 0.001;
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        /**
+         * 6. 初始化入口
+         */
+        
+        // 启动 Three.js
+        initThree();
+        animate();
+
+        // 启动 MediaPipe
+        const videoElement = document.getElementById('video-input');
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5
+        });
+        
+        hands.onResults(onResults);
+        
+        const cameraUtils = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 320,
+            height: 240
+        });
+        
+        // 尝试启动摄像头，失败则降级
+        cameraUtils.start().catch(err => {
+            console.error("Camera failed", err);
+            document.getElementById('loading-screen').innerHTML = "无法访问摄像头<br>已切换至自动演示模式";
+            // 可以在这里添加鼠标事件监听作为备用控制
+            document.addEventListener('mousemove', (e) => {
+                STATE.handPos.x = (e.clientX / window.innerWidth) * 2 - 1;
+                STATE.handPos.y = (e.clientY / window.innerHeight) * 2 - 1;
+                updateParticleBehavior();
+            });
+            document.addEventListener('mousedown', () => { STATE.gesture = 'FIST'; updateParticleBehavior(); });
+            document.addEventListener('mouseup', () => { STATE.gesture = 'OPEN'; setTimeout(()=> STATE.gesture='NONE', 2000); updateParticleBehavior(); });
+        });
+
+    </script>
+</body>
+</html>
