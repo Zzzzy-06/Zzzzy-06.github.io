@@ -32,39 +32,13 @@
             box-sizing: border-box;
         }
         
-        /* MODIFIED: 标题框样式调整，增加了边框和背景，并限制了尺寸 */
-        .title-box { 
-            text-align: right;
-            color: #2a3b45; 
-            text-shadow: 0 0 10px rgba(220, 210, 190, 0.8);
-            
-            /* 框定区域的样式 */
-            padding: 15px; /* 增加内边距 */
-            border-right: 2px solid rgba(184, 92, 58, 0.7); /* 右侧描边 */
-            border-bottom: 2px solid rgba(184, 92, 58, 0.7); /* 底部描边 */
-            background: rgba(255, 255, 255, 0.2); 
-            max-width: 150px; /* 限制最大宽度 */
-            
-            /* 确保位置仍然在右上角 (覆盖了原有的 flex 布局对齐) */
-            position: absolute; 
-            top: 40px; 
-            right: 40px;
+        /* 标题和篆印相关的CSS已保留，但对应的HTML已被删除 */
+        .title-box { text-align: right;
+            color: #2a3b45; text-shadow: 0 0 10px rgba(220, 210, 190, 0.8);
         }
-        
-        /* MODIFIED: 标题 h1 字体和高度缩小 */
-        h1 { 
-            font-size: 2.5rem; /* 缩小字体 */
-            margin: 0; 
-            letter-spacing: 0.4rem;
-            writing-mode: vertical-rl; 
-            text-orientation: upright;
-            height: 200px; /* 缩小高度 */
-            float: right; 
-            border-left: 2px solid #b85c3a; 
-            padding-left: 15px; /* 减小内边距 */
-            margin-top: 10px;
+        h1 { font-size: 3rem; margin: 0; letter-spacing: 0.5rem; writing-mode: vertical-rl; text-orientation: upright;
+            height: 300px; float: right; border-left: 2px solid #b85c3a; padding-left: 20px;
         }
-        
         .stamp { width: 60px; height: 60px; border: 3px solid #b85c3a; color: #b85c3a;
             display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: bold; border-radius: 4px; margin-top: 20px; float: right; clear: both;
             background: rgba(184, 92, 58, 0.1); }
@@ -111,10 +85,7 @@
                 • <span class="highlight">手掌移动</span>：浏览画卷
             </div>
         </div>
-        <div class="title-box">
-            <h1>千里江山图</h1>
-            <div class="stamp">小鸡</div> </div>
-    </div>
+        </div>
 
     <script type="x-shader/x-vertex" id="vertexshader">
         attribute float size;
